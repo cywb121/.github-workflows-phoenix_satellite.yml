@@ -1,0 +1,84 @@
+name: Phoenix Satellite Fetcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      shard:
+        description: "Shard index (1..total_shards)"
+        required: false
+        default: "1"
+      total_shards:
+        description: "Total shards"
+        required: false
+        default: "3"
+      mode:
+        description: "Mode: cold|fail (cold=from satellite_symbols.json; fail=from fail_queue.json)"
+        required: false
+        default: "cold"
+
+  schedule:
+    # 每天 UTC 02:00 跑一次（你也可以改）
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phoenix-satellite
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 默认分 3 片（对应你参数 satellite_cold=1200 时，建议 total_shards=3 或 4）
+        shard: [1, 2, 3]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -V
+          pip install --upgrade pip
+          pip install yfinance pandas
+
+      - name: Run satellite fetch
+        env:
+          SHARD: ${{ matrix.shard }}
+          TOTAL_SHARDS: 3
+          MODE: cold
+          # 每片最多抓多少（你要 1200 冷门分 3 片 => 每片 400）
+          MAX_SYMBOLS: 400
+          PERIOD: 3mo
+          INTERVAL: 1d
+          BATCH_SIZE: 40
+          TIMEOUT_SECONDS: 20
+          THROTTLE_SLEEP_MIN: 0.8
+          THROTTLE_SLEEP_MAX: 2.0
+          THREADS: "true"
+          AUTO_ADJUST: "true"
+          OUT_DIR: data/yf_cache/fast
+        run: |
+          python tools/satellite_fetch.py
+
+      - name: Pack results
+        run: |
+          mkdir -p dist
+          zip -r "dist/fast_cache_shard_${{ matrix.shard }}.zip" data/yf_cache/fast
+
+      - name: Upload artifact (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast_cache_shard_${{ matrix.shard }}
+          path: dist/fast_cache_shard_${{ matrix.shard }}.zip
+          retention-days: 3
